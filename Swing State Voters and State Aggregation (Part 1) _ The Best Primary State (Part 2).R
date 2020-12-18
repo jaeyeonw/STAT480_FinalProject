@@ -1,0 +1,516 @@
+rm(list=ls())
+#reading in demographic and voter data for the 2012 and 2016 elections
+#for some reason Alaska is missing, but it only has 3 electoral votes and has been consistantly republican so it's not too important
+library(readr)
+library(ggplot2)
+library(tidyverse)
+library(ggspatial)
+library(sf)
+#Reading in State voting and Deomgraphics Data
+Demographics = read.csv("https://raw.githubusercontent.com/MEDSL/2018-elections-unoffical/master/election-context-2018.csv")
+#Removing variables for state elections
+Demographics = Demographics %>% select(-demgov14,-demgov16,-demsen16,-demhouse16,-repgov14,-repgov16,-repsen16,-rephouse16,-othersen16,-otherhouse16,-othergov16,-othergov14)
+#Removing three counties with no data
+Demographics = na.omit(Demographics)
+
+#Because the data comes at the county level, but we're interested in states we need to aggregate the variables to the state level.
+#Here we sum all voter numbers and average demographic data weighted by population
+State_Data = Demographics %>% group_by(state) %>% mutate() %>%
+  summarize(Republican_Votes16 = sum(trump16),
+            Democrat_Votes16=sum(clinton16),
+            Percent_Republican16 = sum(trump16)/(sum(trump16)+sum(clinton16)),#Ignores 3rd party votes
+            Republican_Votes12 = sum(romney12),
+            Democrat_Votes12=sum(obama12),
+            Percent_Republican12 = sum(romney12)/(sum(romney12)+sum(obama12)),
+            white_pct = mean(white_pct*total_population)/mean(total_population),
+            black_pct = mean(black_pct*total_population)/mean(total_population),
+            hispanic_pct = mean(hispanic_pct*total_population)/mean(total_population),
+            nonwhite_pct = mean(nonwhite_pct*total_population)/mean(total_population),
+            foreignborn_pct = mean(foreignborn_pct*total_population)/mean(total_population),
+            female_pct = mean(female_pct*total_population)/mean(total_population),
+            age29andunder_pct = mean(age29andunder_pct*total_population)/mean(total_population),
+            age65andolder_pct = mean(age65andolder_pct*total_population)/mean(total_population),
+            average_median_hh_inc = mean(median_hh_inc), #median income is now the average of county median incomes
+            clf_unemploy_pct = mean(clf_unemploy_pct*total_population)/mean(total_population),
+            lesshs_pct = mean(lesshs_pct*total_population)/mean(total_population),
+            lesscollege_pct = mean(lesscollege_pct*total_population)/mean(total_population),
+            lesshs_whites_pct = mean(lesshs_whites_pct*total_population)/mean(total_population),
+            lesscollege_whites_pct = mean(lesscollege_whites_pct*total_population)/mean(total_population),
+            rural_pct = mean(rural_pct*total_population)/mean(total_population),
+            ID = mean(fips)%/%1000)
+
+#Adding Electoral votes column
+ECVotes = read.csv("https://raw.githubusercontent.com/PitchInteractiveInc/tilegrams/master/data/us/electoral-college-votes-by-state.csv",header = FALSE,col.names = c("ID","ECvotes"))
+ECVotes = ECVotes %>% slice(-2) #removing Alaska
+State_Data = State_Data %>% left_join(ECVotes, by = "ID")
+
+#Here we create an importance rating based on the how many votes the state has, and how close it's election was
+#Formula for closeness puts states on an S curve based on how close they were to 50/50
+#2016 closeness weighted to 67% 2012 weighted to 33%
+State_Data = State_Data %>% mutate(Closeness16 = (.001/(.5-Percent_Republican16)^4)/((.001/(.5-Percent_Republican16)^4)+20),
+                                   Closeness12 = (.001/(.5-Percent_Republican12)^4)/((.001/(.5-Percent_Republican12)^4)+20)) %>% 
+  mutate(Importance = (Closeness16*2/3+Closeness12/3)*ECvotes)
+
+#plots of imporance and closeness scores between the two elections
+State_Data %>% ggplot(aes(x=Importance, color = Importance)) + geom_histogram(binwidth = 1,aes(color = 0)) + labs(title = "Imporance of States",y="Count") +scale_y_continuous(breaks=c(seq(0,12,2)))
+State_Data %>% ggplot(aes(x=Closeness16,y=Closeness12)) + geom_point()
+#plot of how we translate closeness to weight of electoral college votes
+example = data.frame(percent = seq(0,50,1), Closeness = (.001/(.5-seq(0,.5,.01))^4)/((.001/(.5-seq(0,.5,.01))^4)+20))
+ggplot(data = example, aes(x=percent,y=(Closeness)))+ geom_line() + labs(title = "Mapping of Closeness to electoral college vote weight",x="Vote percent of losing party",y="Weight of EC votes")
+
+State_Data %>% arrange(Importance) %>% ggplot(aes(x=reorder(state,Importance), weight=Importance)) + geom_bar(aes(fill=Importance)) + coord_flip() + 
+  scale_fill_gradient2(low="gray3", mid="navyblue", high="red",midpoint = 10) + labs(title = "Electoral Importance of States",y="Closeness Score",x="State")
+
+
+#Changing Non-white to other
+State_Data = State_Data %>% mutate(nonwhite_pct = nonwhite_pct-hispanic_pct-black_pct) %>% rename("other_pct" = nonwhite_pct)
+
+#finding the median statistics weighted by importance
+Ideal_State = State_Data %>% 
+  summarize(white_pct = mean(white_pct*Importance)/mean(Importance),
+            black_pct = mean(black_pct*Importance)/mean(Importance),
+            hispanic_pct = mean(hispanic_pct*Importance)/mean(Importance),
+            other_pct = mean(other_pct*Importance)/mean(Importance),
+            foreignborn_pct = mean(foreignborn_pct*Importance)/mean(Importance),
+            female_pct = mean(female_pct*Importance)/mean(Importance),
+            age29andunder_pct = mean(age29andunder_pct*Importance)/mean(Importance),
+            age65andolder_pct = mean(age65andolder_pct*Importance)/mean(Importance),
+            average_median_hh_inc = mean(average_median_hh_inc*Importance)/mean(Importance),
+            clf_unemploy_pct = mean(clf_unemploy_pct*Importance)/mean(Importance),
+            lesshs_pct = mean(lesshs_pct*Importance)/mean(Importance),
+            lesscollege_pct = mean(lesscollege_pct*Importance)/mean(Importance),
+            lesshs_whites_pct = mean(lesshs_whites_pct*Importance)/mean(Importance),
+            lesscollege_whites_pct = mean(lesscollege_whites_pct*Importance)/mean(Importance),
+            rural_pct = mean(rural_pct*Importance)/mean(Importance))
+
+
+#-----------------------------------------------------part 2-----------------------------------------------------
+#-----------------------------------General-----------------------------------
+General_State_Score = State_Data %>%
+  select(state, white_pct:rural_pct)
+
+#Subtracting each demographic observation from the ideal observation for each state
+i=2
+j=1
+for(i in 2:length(Ideal_State)){
+  for(j in 1:nrow(General_State_Score)){
+    General_State_Score[j,i]= abs(General_State_Score[j,i]-Ideal_State[i-1])
+  }
+}
+
+#Adjusting the "average_median_hh_inc" variable
+General_State_Score = General_State_Score %>%
+  mutate(average_median_hh_inc = average_median_hh_inc/3000, #bringing importance income in line with other variables
+         foreignborn_pct = foreignborn_pct*.45)# only 45% of the foriegn born population can vote, so we weight this lower -- https://www.pewresearch.org/fact-tank/2019/06/17/key-findings-about-u-s-immigrants/
+
+#Creating "score" variable (summing all of the absolute values of the subtracted demographic observations for each state)
+General_State_Score$score = rowSums(General_State_Score[,2:16])
+
+#The top 5 best states for Unadjusted primary (the lower score means less difference from the ideal state demographic)
+General_State_Score %>%
+  select(state, score) %>%
+  arrange(score) %>%
+  slice(1:20) #Illinois, Rhode Island, Delaware, Florida, Connecticut
+
+State_Score = General_State_Score
+#--------------------General-Map---------------------
+states_location = map_data("state") #doesn't have Hawaii
+states_location_for_texts = read.csv("statelatlong.csv")
+
+states_location$region = str_to_title(states_location$region)
+states_location_for_texts = states_location_for_texts %>%
+  slice(-2)
+
+General_State_Score_map = General_State_Score %>% 
+  left_join(states_location, by = c("state" = "region")) %>%
+  left_join(states_location_for_texts, by = c("state" = "City"))
+
+ggplot(General_State_Score_map, aes(x = long, y = lat)) + 
+  geom_polygon(aes(group = group, fill = score), color = "black") +
+  geom_polygon(data = General_State_Score_map %>% 
+                 filter(state %in% c("Illinois", "Rhode Island", "Delaware", "Florida", "Connecticut")),
+               aes(group = group, fill = score), size = 2, color = "black") +
+  scale_fill_gradient(low = "darkgreen", high = "white", na.value = NA) +
+  geom_text(data = General_State_Score_map %>% 
+              filter(!state %in% c("New York", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New Jersey", "Delaware", "Maryland", "District of Columbia", "West Virginia",
+                                   "Florida", "Idaho", "Nevada", "Oklahoma", "Texas", "Louisiana", "Minnesota", "Michigan", "Illinois", "North Carolina", "Virginia", "Hawaii", "Washington")),
+            aes(x = Longitude, y = Latitude, label = State), 
+            vjust = 0 , size = 5) +
+  geom_text(data = General_State_Score_map %>% 
+              filter(!state %in% c("New York", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New Jersey", "Delaware", "Maryland", "District of Columbia", "West Virginia",
+                                   "Florida", "Idaho", "Nevada", "Oklahoma", "Texas", "Louisiana", "Minnesota", "Michigan", "Illinois", "North Carolina", "Virginia", "Hawaii", "Washington")),
+            aes(x = Longitude, y = Latitude, label = round(score, digits = 0)), 
+            vjust = + 1.5 , size = 5, color = "black", family = "Times") +
+  #-----------------------Abb. state names manually entered-----------------------------
+  annotate(geom = "text", x = -75, y = 44, label = "NY", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -71.5, y = 44, label = "NH", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 44.5, label = "VT", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -69.5, y = 42.5, label = "MA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -70.5, y = 41, label = "RI", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72, y = 40.5, label = "CT", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -73, y = 39.5, label = "NJ", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 38.4, label = "DE", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74, y = 38, label = "MD", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74.5, y = 36.9, label = "DC", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -80.5, y = 39, label = "WV", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -81.7, y = 29, label = "FL", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -114.5, y = 44.5, label = "ID", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -117, y = 40, label = "NV", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -97.5, y = 36, label = "OK", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -100, y = 32, label = "TX", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -92.5, y = 31.5, label = "LA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -94.5, y = 46.5, label = "MN", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -85, y = 43.5, label = "MI", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -89, y = 41, label = "IL", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -79, y = 36, label = "NC", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -78.5, y = 38, label = "VA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -120, y = 48, label = "WA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -115, y = 26, label = "HI", size = 5, fontface = "bold") +
+  #--------------------------Score manually entered-----------------------------------
+  annotate(geom = "text", x = -75, y = 43.3, label = round(General_State_Score$score[32], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -71.5, y = 43.3, label = round(General_State_Score$score[29], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 43.8, label = round(General_State_Score$score[45], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -69.5, y = 41.8, label = round(General_State_Score$score[21], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -70.5, y = 40.3, label = round(General_State_Score$score[39], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72, y = 40, label = round(General_State_Score$score[6], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -73, y = 39, label = round(General_State_Score$score[30], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 37.8, label = round(General_State_Score$score[7], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74, y = 37.5, label = round(General_State_Score$score[20], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74.5, y = 36.3, label = round(General_State_Score$score[8], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -80.7, y = 38.3, label = round(General_State_Score$score[48], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -81.7, y = 28.3, label = round(General_State_Score$score[9], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -114.5, y = 43.8, label = round(General_State_Score$score[12], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -117, y = 39.3, label = round(General_State_Score$score[28], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -97.5, y = 35.3, label = round(General_State_Score$score[36], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -100, y = 31.3, label = round(General_State_Score$score[43], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -92.5, y = 30.8, label = round(General_State_Score$score[18], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -94.5, y = 45.8, label = round(General_State_Score$score[23], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -85, y = 42.8, label = round(General_State_Score$score[22], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -89, y = 40.3, label = round(General_State_Score$score[13], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -79, y = 35.3, label = round(General_State_Score$score[33], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -78.5, y = 37.3, label = round(General_State_Score$score[46], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -120, y = 47.3, label = round(General_State_Score$score[47], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -115, y = 25.3, label = round(General_State_Score$score[11], digits = 0), size = 5, fontface = "bold") +
+  theme_bw() +
+  labs(fill = "State Scores",
+       title = "State Scores based on Swing State Demographics") +
+  theme(legend.position = "top",
+        plot.title = element_text(hjust = 0.5, size = 15, face = "bold")) +
+  scale_y_continuous(breaks=c()) +
+  scale_x_continuous(breaks=c())
+
+  
+#-----------------------------------Republican Party-----------------------------------
+Republican_State_Score = State_Data %>%
+  select(state, white_pct:rural_pct)
+
+#Weightings
+#Increasing prefered demographics republicans have trouble with: Black, hispanic, female, youth
+Republican_Ideal_State = Ideal_State %>% mutate(black_pct = black_pct + sd(State_Score$black_pct),
+                                                hispanic_pct = hispanic_pct + sd(State_Score$hispanic_pct),
+                                                other_pct = other_pct + sd(State_Score$other_pct),
+                                                female_pct = female_pct + sd(State_Score$female_pct),
+                                                age29andunder_pct = age29andunder_pct + sd(State_Score$age29andunder_pct),
+                                                lesshs_pct = lesshs_pct - sd(State_Score$lesshs_pct),
+                                                lesscollege_pct = lesscollege_pct - sd(State_Score$lesscollege_pct),
+                                                lesshs_whites_pct = lesshs_whites_pct - sd(State_Score$lesshs_whites_pct),
+                                                lesscollege_whites_pct = lesscollege_whites_pct - sd(State_Score$lesscollege_whites_pct),
+                                                rural_pct = rural_pct - sd(State_Score$rural_pct))
+
+#Subtracting each demographic observation from the ideal observation for each state
+i=2
+j=1
+for(i in 2:length(Republican_Ideal_State)){
+  for(j in 1:nrow(Republican_State_Score)){
+    Republican_State_Score[j,i]= abs(Republican_State_Score[j,i]-Republican_Ideal_State[i-1])
+  }
+}
+
+#Adjusting the "average_median_hh_inc" variable
+Republican_State_Score = Republican_State_Score %>%
+  mutate(average_median_hh_inc = average_median_hh_inc/3000, #bringing importance income in line with other variables
+         foreignborn_pct = foreignborn_pct*.45)# only 45% of the foriegn born population can vote, so we weight this lower -- https://www.pewresearch.org/fact-tank/2019/06/17/key-findings-about-u-s-immigrants/
+
+#Creating "score" variable (summing all of the absolute values of the subtracted demographic observations for each state)
+Republican_State_Score$score = rowSums(Republican_State_Score[,2:16])
+
+#The top 5 best states in Republican Party (the lower score means less difference from the ideal state demographic)
+Republican_State_Score %>%
+  select(state, score) %>%
+  arrange(score) %>%
+  slice(1:20) #Illinois, New Jersey, New York, Virginia, Colorado
+
+#--------------------Republican-Map---------------------
+states_location = map_data("state") #doesn't have Hawaii
+states_location_for_texts = read.csv("statelatlong.csv")
+
+states_location$region = str_to_title(states_location$region)
+states_location_for_texts = states_location_for_texts %>%
+  slice(-2)
+
+Republican_State_Score_map = Republican_State_Score %>% 
+  left_join(states_location, by = c("state" = "region")) %>%
+  left_join(states_location_for_texts, by = c("state" = "City"))
+
+ggplot(Republican_State_Score_map, aes(x = long, y = lat)) + 
+  geom_polygon(aes(group = group, fill = score), color = "black") +
+  geom_polygon(data = Republican_State_Score_map %>% 
+                 filter(state %in% c("Illinois", "New Jersey", "New York", "Virginia", "Colorado")),
+               aes(group = group, fill = score), size = 2, color = "black") +
+  scale_fill_gradient(low = "red", high = "white", na.value = NA) +
+  geom_text(data = Republican_State_Score_map %>% 
+              filter(!state %in% c("New York", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New Jersey", "Delaware", "Maryland", "District of Columbia", "West Virginia",
+                                   "Florida", "Idaho", "Nevada", "Oklahoma", "Texas", "Louisiana", "Minnesota", "Michigan", "Illinois", "North Carolina", "Virginia", "Hawaii", "Washington")),
+            aes(x = Longitude, y = Latitude, label = State), 
+            vjust = 0 , size = 5) +
+  geom_text(data = Republican_State_Score_map %>% 
+              filter(!state %in% c("New York", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New Jersey", "Delaware", "Maryland", "District of Columbia", "West Virginia",
+                                   "Florida", "Idaho", "Nevada", "Oklahoma", "Texas", "Louisiana", "Minnesota", "Michigan", "Illinois", "North Carolina", "Virginia", "Hawaii", "Washington")),
+            aes(x = Longitude, y = Latitude, label = round(score, digits = 0)), 
+            vjust = + 1.5 , size = 5, color = "black", family = "Times") +
+  #-----------------------Abb. state names manually entered-----------------------------
+  annotate(geom = "text", x = -75, y = 44, label = "NY", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -71.5, y = 44, label = "NH", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 44.5, label = "VT", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -69.5, y = 42.5, label = "MA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -70.5, y = 41, label = "RI", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72, y = 40.5, label = "CT", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -73, y = 39.5, label = "NJ", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 38.4, label = "DE", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74, y = 38, label = "MD", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74.5, y = 36.9, label = "DC", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -80.5, y = 39, label = "WV", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -81.7, y = 29, label = "FL", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -114.5, y = 44.5, label = "ID", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -117, y = 40, label = "NV", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -97.5, y = 36, label = "OK", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -100, y = 32, label = "TX", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -92.5, y = 31.5, label = "LA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -94.5, y = 46.5, label = "MN", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -85, y = 43.5, label = "MI", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -89, y = 41, label = "IL", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -79, y = 36, label = "NC", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -78.5, y = 38, label = "VA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -120, y = 48, label = "WA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -115, y = 26, label = "HI", size = 5, fontface = "bold") +
+  #--------------------------Score manually entered-----------------------------------
+  annotate(geom = "text", x = -75, y = 43.3, label = round(Republican_State_Score$score[32], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -71.5, y = 43.3, label = round(Republican_State_Score$score[29], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 43.8, label = round(Republican_State_Score$score[45], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -69.5, y = 41.8, label = round(Republican_State_Score$score[21], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -70.5, y = 40.3, label = round(Republican_State_Score$score[39], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72, y = 40, label = round(Republican_State_Score$score[6], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -73, y = 39, label = round(Republican_State_Score$score[30], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 37.8, label = round(Republican_State_Score$score[7], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74, y = 37.5, label = round(Republican_State_Score$score[20], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74.5, y = 36.3, label = round(Republican_State_Score$score[8], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -80.7, y = 38.3, label = round(Republican_State_Score$score[48], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -81.7, y = 28.3, label = round(Republican_State_Score$score[9], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -114.5, y = 43.8, label = round(Republican_State_Score$score[12], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -117, y = 39.3, label = round(Republican_State_Score$score[28], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -97.5, y = 35.3, label = round(Republican_State_Score$score[36], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -100, y = 31.3, label = round(Republican_State_Score$score[43], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -92.5, y = 30.8, label = round(Republican_State_Score$score[18], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -94.5, y = 45.8, label = round(Republican_State_Score$score[23], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -85, y = 42.8, label = round(Republican_State_Score$score[22], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -89, y = 40.3, label = round(Republican_State_Score$score[13], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -79, y = 35.3, label = round(Republican_State_Score$score[33], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -78.5, y = 37.3, label = round(Republican_State_Score$score[46], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -120, y = 47.3, label = round(Republican_State_Score$score[47], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -115, y = 25.3, label = round(Republican_State_Score$score[11], digits = 0), size = 5, fontface = "bold") +
+  theme_bw() +
+  labs(fill = "State Scores",
+       title = "State Scores for the Republican Party") +
+  theme(legend.position = "top",
+        plot.title = element_text(hjust = 0.5, size = 15, face = "bold")) +
+  scale_y_continuous(breaks=c()) +
+  scale_x_continuous(breaks=c())
+
+
+#-----------------------------------Democratic Party-----------------------------------
+Democrat_State_Score = State_Data %>%
+  select(state, white_pct:rural_pct)
+
+#Weightings
+#Increasing prefered demographics democrats have trouble with: Lower Education, white, rural
+Democrat_Ideal_State = Ideal_State %>% mutate(black_pct = black_pct - sd(State_Score$black_pct),
+                                              hispanic_pct = hispanic_pct - sd(State_Score$hispanic_pct),
+                                              other_pct = other_pct - sd(State_Score$other_pct),
+                                              female_pct = female_pct - sd(State_Score$female_pct),
+                                              age29andunder_pct = age29andunder_pct - sd(State_Score$age29andunder_pct),
+                                              lesshs_pct = lesshs_pct + sd(State_Score$lesshs_pct),
+                                              lesscollege_pct = lesscollege_pct + sd(State_Score$lesscollege_pct),
+                                              lesshs_whites_pct = lesshs_whites_pct + sd(State_Score$lesshs_whites_pct),
+                                              lesscollege_whites_pct = lesscollege_whites_pct + sd(State_Score$lesscollege_whites_pct),
+                                              rural_pct = rural_pct + sd(State_Score$rural_pct))
+
+#Subtracting each demographic observation from the ideal observation for each state
+i=2
+j=1
+for(i in 2:length(Democrat_Ideal_State)){
+  for(j in 1:nrow(Democrat_State_Score)){
+    Democrat_State_Score[j,i]= abs(Democrat_State_Score[j,i]-Democrat_Ideal_State[i-1])
+  }
+}
+
+#Adjusting the "average_median_hh_inc" variable
+Democrat_State_Score = Democrat_State_Score %>%
+  mutate(average_median_hh_inc = average_median_hh_inc/3000, #bringing importance income in line with other variables
+         foreignborn_pct = foreignborn_pct*.45)# only 45% of the foriegn born population can vote, so we weight this lower -- https://www.pewresearch.org/fact-tank/2019/06/17/key-findings-about-u-s-immigrants/
+
+#Creating "score" variable (summing all of the absolute values of the subtracted demographic observations for each state)
+Democrat_State_Score$score = rowSums(Democrat_State_Score[,2:16])
+
+#The top 5 best states in Republican Party (the lower score means less difference from the ideal state demographic)
+Democrat_State_Score %>%
+  select(state, score) %>%
+  arrange(score) %>%
+  slice(1:20) #Rhode Island, Delaware, Indiana, Pennsylvania, Oklahoma
+
+#--------------------Democratic-Map---------------------
+states_location = map_data("state") #doesn't have Hawaii
+states_location_for_texts = read.csv("statelatlong.csv")
+
+states_location$region = str_to_title(states_location$region)
+states_location_for_texts = states_location_for_texts %>%
+  slice(-2)
+
+Democratic_State_Score_map = Democrat_State_Score %>% 
+  left_join(states_location, by = c("state" = "region")) %>%
+  left_join(states_location_for_texts, by = c("state" = "City"))
+
+ggplot(Democratic_State_Score_map, aes(x = long, y = lat)) + 
+  geom_polygon(aes(group = group, fill = score), color = "black") +
+  geom_polygon(data = Democratic_State_Score_map %>% 
+                 filter(state %in% c("Rhode Island", "Delaware", "Indiana", "Pennsylvania", "Oklahoma")),
+               aes(group = group, fill = score), size = 2, color = "black") +
+  scale_fill_gradient(low = "blue3", high = "white", na.value = NA) +
+  geom_text(data = Democratic_State_Score_map %>% 
+              filter(!state %in% c("New York", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New Jersey", "Delaware", "Maryland", "District of Columbia", "West Virginia",
+                                   "Florida", "Idaho", "Nevada", "Oklahoma", "Texas", "Louisiana", "Minnesota", "Michigan", "Illinois", "North Carolina", "Virginia", "Hawaii", "Washington")),
+            aes(x = Longitude, y = Latitude, label = State), 
+            vjust = 0 , size = 5) +
+  geom_text(data = Democratic_State_Score_map %>% 
+              filter(!state %in% c("New York", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New Jersey", "Delaware", "Maryland", "District of Columbia", "West Virginia",
+                                   "Florida", "Idaho", "Nevada", "Oklahoma", "Texas", "Louisiana", "Minnesota", "Michigan", "Illinois", "North Carolina", "Virginia", "Hawaii", "Washington")),
+            aes(x = Longitude, y = Latitude, label = round(score, digits = 0)), 
+            vjust = + 1.5 , size = 5, color = "black", family = "Times") +
+  #-----------------------Abb. state names manually entered-----------------------------
+  annotate(geom = "text", x = -75, y = 44, label = "NY", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -71.5, y = 44, label = "NH", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 44.5, label = "VT", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -69.5, y = 42.5, label = "MA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -70.5, y = 41, label = "RI", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72, y = 40.5, label = "CT", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -73, y = 39.5, label = "NJ", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 38.4, label = "DE", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74, y = 38, label = "MD", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74.5, y = 36.9, label = "DC", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -80.5, y = 39, label = "WV", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -81.7, y = 29, label = "FL", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -114.5, y = 44.5, label = "ID", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -117, y = 40, label = "NV", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -97.5, y = 36, label = "OK", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -100, y = 32, label = "TX", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -92.5, y = 31.5, label = "LA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -94.5, y = 46.5, label = "MN", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -85, y = 43.5, label = "MI", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -89, y = 41, label = "IL", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -79, y = 36, label = "NC", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -78.5, y = 38, label = "VA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -120, y = 48, label = "WA", size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -115, y = 26, label = "HI", size = 5, fontface = "bold") +
+  #--------------------------Score manually entered-----------------------------------
+  annotate(geom = "text", x = -75, y = 43.3, label = round(Democrat_State_Score$score[32], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -71.5, y = 43.3, label = round(Democrat_State_Score$score[29], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 43.8, label = round(Democrat_State_Score$score[45], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -69.5, y = 41.8, label = round(Democrat_State_Score$score[21], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -70.5, y = 40.3, label = round(Democrat_State_Score$score[39], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72, y = 40, label = round(Democrat_State_Score$score[6], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -73, y = 39, label = round(Democrat_State_Score$score[30], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 37.8, label = round(Democrat_State_Score$score[7], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74, y = 37.5, label = round(Democrat_State_Score$score[20], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -74.5, y = 36.3, label = round(Democrat_State_Score$score[8], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -80.7, y = 38.3, label = round(Democrat_State_Score$score[48], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -81.7, y = 28.3, label = round(Democrat_State_Score$score[9], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -114.5, y = 43.8, label = round(Democrat_State_Score$score[12], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -117, y = 39.3, label = round(Democrat_State_Score$score[28], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -97.5, y = 35.3, label = round(Democrat_State_Score$score[36], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -100, y = 31.3, label = round(Democrat_State_Score$score[43], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -92.5, y = 30.8, label = round(Democrat_State_Score$score[18], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -94.5, y = 45.8, label = round(Democrat_State_Score$score[23], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -85, y = 42.8, label = round(Democrat_State_Score$score[22], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -89, y = 40.3, label = round(Democrat_State_Score$score[13], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -79, y = 35.3, label = round(Democrat_State_Score$score[33], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -78.5, y = 37.3, label = round(Democrat_State_Score$score[46], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -120, y = 47.3, label = round(Democrat_State_Score$score[47], digits = 0), size = 5, fontface = "bold") +
+  annotate(geom = "text", x = -115, y = 25.3, label = round(Democrat_State_Score$score[11], digits = 0), size = 5, fontface = "bold") +
+  theme_bw() +
+  labs(fill = "State Scores",
+       title = "State Scores for the Democratic Party") +
+  theme(legend.position = "top",
+        plot.title = element_text(hjust = 0.5, size = 15, face = "bold")) +
+  scale_y_continuous(breaks=c()) +
+  scale_x_continuous(breaks=c())
+
+
+#-----------------------------------Final Map-----------------------------------
+states_location = map_data("state") #doesn't have Hawaii
+states_location_for_texts = read.csv("statelatlong.csv")
+
+states_location$region = str_to_title(states_location$region)
+states_location_for_texts = states_location_for_texts %>%
+  slice(-2)
+
+Final_map = Democrat_State_Score %>% 
+  left_join(states_location, by = c("state" = "region")) %>%
+  left_join(states_location_for_texts, by = c("state" = "City"))
+
+ggplot(Democratic_State_Score_map, aes(x = long, y = lat)) + 
+  geom_polygon(aes(group = group), fill = "grey90", color = "black") +
+  geom_polygon(data = Democratic_State_Score_map %>% 
+                 filter(state %in% c("Illinois")),
+               aes(group = group), fill = "red", size = 2, color = "black") +
+  geom_polygon(data = Democratic_State_Score_map %>% 
+                 filter(state %in% c("Rhode Island")),
+               aes(group = group), fill = "purple", size = 2, color = "black") +
+  geom_polygon(data = Democratic_State_Score_map %>% 
+                 filter(state %in% c("Colorado")),
+               aes(group = group), fill = "orange", size = 2, color = "black") +
+  geom_text(data = Democratic_State_Score_map %>% 
+              filter(!state %in% c("New York", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut", "New Jersey", "Delaware", "Maryland", "District of Columbia", "West Virginia",
+                                   "Florida", "Idaho", "Nevada", "Oklahoma", "Texas", "Louisiana", "Minnesota", "Michigan", "Illinois", "North Carolina", "Virginia", "Hawaii", "Washington")),
+            aes(x = Longitude, y = Latitude, label = State), 
+            vjust = 0 , size = 8) +
+  #-----------------------Abb. state names manually entered-----------------------------
+annotate(geom = "text", x = -75, y = 44, label = "NY", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -71.5, y = 44, label = "NH", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 44.5, label = "VT", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -69.5, y = 42.5, label = "MA", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -70.5, y = 41, label = "RI", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -72, y = 40.5, label = "CT", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -73, y = 39.5, label = "NJ", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -72.5, y = 38.4, label = "DE", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -74, y = 38, label = "MD", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -74.5, y = 36.9, label = "DC", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -80.5, y = 39, label = "WV", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -81.7, y = 29, label = "FL", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -114.5, y = 44.5, label = "ID", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -117, y = 40, label = "NV", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -97.5, y = 36, label = "OK", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -100, y = 32, label = "TX", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -92.5, y = 31.5, label = "LA", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -94.5, y = 46.5, label = "MN", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -85, y = 43.5, label = "MI", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -89, y = 41, label = "IL", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -79, y = 36, label = "NC", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -78.5, y = 38, label = "VA", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -120, y = 48, label = "WA", size = 8, fontface = "bold") +
+  annotate(geom = "text", x = -115, y = 26, label = "HI", size = 8, fontface = "bold") +
+  theme_bw() +
+  labs(title = "Best Primary States") +
+  theme(legend.position = "top",
+        plot.title = element_text(hjust = 0.5, size = 15, face = "bold")) +
+  scale_y_continuous(breaks=c()) +
+  scale_x_continuous(breaks=c())
+
